@@ -1,9 +1,6 @@
 import streamlit as st
 import pandas as pd
-from langchain_community.llms import Ollama
-from langchain.prompts import PromptTemplate
-from langchain.callbacks.manager import CallbackManager
-from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+import google.generativeai as genai
 import re
 import logging
 from datetime import datetime
@@ -16,15 +13,6 @@ logging.basicConfig(
     format='%(asctime)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-
-# Initialize Ollama LLM
-if 'llm' not in st.session_state:
-    st.session_state.llm = Ollama(
-        base_url="http://localhost:11434",
-        model="llama3.2:3b",
-        verbose=True,
-        callback_manager=CallbackManager([StreamingStdOutCallbackHandler()]),
-    )
 
 # Define product info
 ITOM = {
@@ -133,6 +121,10 @@ def initialize_session_state():
         st.session_state.email_verified = False
     if 'user_email' not in st.session_state:
         st.session_state.user_email = ""
+    if 'api_key' not in st.session_state:
+        st.session_state.api_key = ""
+    if 'genai_initialized' not in st.session_state:
+        st.session_state.genai_initialized = False
     if 'template' not in st.session_state:
         st.session_state.template = """You are an expert B2B email writer with extensive experience in crafting highly personalized, engaging emails.
 Generate exactly three paragraphs of body text (no greeting, no subject line, no extra lines, no signature, no placeholder text for CTA, etc.), and ensure the text directly addresses the recipient using second-person pronouns like you, your, yourself.
@@ -173,11 +165,33 @@ Establish a personal connection and relate to their role, industry, or specific 
 Present the value proposition of OpManager Plus by addressing their specific needs or industry pain points (incorporate custom text if relevant).
 Demonstrate how OpManager Plus can benefit their role and organization, concluding with the CTA (incorporate custom text if relevant).
     """
-        st.session_state.prompt = PromptTemplate(
-            input_variables=["first_name", "last_name", "company", "role", "industry",
-                             "country", "product_description", "product_features", "cta", "custom_text"],
-            template=st.session_state.template,
+
+
+def initialize_gemini(api_key):
+    """Initialize Gemini model with provided API key"""
+    try:
+        genai.configure(api_key=api_key)
+        # Configure default generation config
+        generation_config = {
+            "temperature": 0.7,
+            "top_p": 0.95,
+            "top_k": 40,
+            "max_output_tokens": 60000,
+        }
+
+        # Initialize Gemini Pro model
+        model = genai.GenerativeModel(
+            model_name="gemini-2.5-pro-exp-03-25",
+            generation_config=generation_config
         )
+
+        st.session_state.model = model
+        st.session_state.genai_initialized = True
+        return True
+    except Exception as e:
+        st.error(f"Error initializing Gemini API: {str(e)}")
+        st.session_state.genai_initialized = False
+        return False
 
 
 def email_verification_form():
@@ -202,12 +216,69 @@ def email_verification_form():
     return False
 
 
+def api_key_form():
+    """Display API key input form"""
+    st.sidebar.markdown("### Gemini API Configuration")
+    api_key = st.sidebar.text_input(
+        "Enter your Gemini API Key",
+        type="password",
+        help="Enter your Google AI Studio API key for Gemini"
+    )
+
+    if api_key:
+        if api_key != st.session_state.api_key or not st.session_state.genai_initialized:
+            st.session_state.api_key = api_key
+            if initialize_gemini(api_key):
+                st.sidebar.success("Gemini API initialized successfully!")
+                return True
+            else:
+                return False
+        return True
+    return False
+
+
 def parse_email_paragraphs(email_content):
     """Split email content into three paragraphs."""
     paragraphs = email_content.strip().split('\n\n')
-    while len(paragraphs) < 3:
-        paragraphs.append("")
-    return paragraphs[:3]
+    clean_paragraphs = []
+
+    for p in paragraphs:
+        # Skip empty paragraphs or those that might be formatting elements
+        if p and not p.startswith('---') and not p.startswith('#'):
+            clean_paragraphs.append(p)
+
+    while len(clean_paragraphs) < 3:
+        clean_paragraphs.append("")
+
+    return clean_paragraphs[:3]
+
+
+import time
+
+
+def generate_email_content(prompt):
+    """Generate email content using Gemini model with rate limit handling."""
+    retry_count = 0
+    max_retries = 5
+    delay = 60  # start with 60 seconds
+
+    while retry_count < max_retries:
+        try:
+            response = st.session_state.model.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            error_message = str(e)
+            if "429" in error_message or "quota" in error_message.lower():
+                st.warning(f"Rate limit hit. Waiting for {delay} seconds before retrying...")
+                time.sleep(delay)
+                retry_count += 1
+                delay *= 2  # exponential backoff
+            else:
+                st.error(f"Error generating content: {error_message}")
+                return f"Error: {error_message}"
+
+    st.error("Max retries exceeded due to rate limits.")
+    return "Error: Too many requests. Please try again later or check your quota."
 
 
 def generate_bulk_emails(df, cta_text, custom_text):
@@ -221,7 +292,7 @@ def generate_bulk_emails(df, cta_text, custom_text):
     total_rows = len(df)
 
     for idx, row in df.iterrows():
-        prompt = st.session_state.prompt.format(
+        prompt = st.session_state.template.format(
             first_name=row['First Name'],
             last_name=row['Last Name'],
             company=row['Company'],
@@ -235,7 +306,7 @@ def generate_bulk_emails(df, cta_text, custom_text):
         )
 
         try:
-            response = st.session_state.llm(prompt)
+            response = generate_email_content(prompt)
             paragraphs = parse_email_paragraphs(response)
             df.at[idx, 'Paragraph1'] = paragraphs[0]
             df.at[idx, 'Paragraph2'] = paragraphs[1]
@@ -252,12 +323,17 @@ def generate_bulk_emails(df, cta_text, custom_text):
 def main():
     initialize_session_state()
 
+    st.title("Hyper-Personalized B2B Email Generator")
+
     # Email verification before showing the main content
     if not email_verification_form():
         st.warning("Please enter your zohocorp.com email to access the tool")
         return
 
-    st.title("Hyper-Personalized B2B Email Generator")
+    # API key verification
+    if not api_key_form():
+        st.warning("Please enter a valid Gemini API key to use the tool")
+        return
 
     # Documentation section
     with st.expander("📚 How to Use & Personalization Features"):
@@ -318,6 +394,13 @@ David,Kumar,SecureNet Solutions,Infrastructure Lead,Banking,Australia"""
         placeholder="E.g., Recent security breaches in the industry, specific compliance requirements, or current market challenges..."
     )
 
+    # Model parameters (optional)
+    with st.sidebar.expander("Advanced Model Settings"):
+        temperature = st.slider("Temperature", min_value=0.0, max_value=1.0, value=0.7, step=0.1,
+                                help="Higher values make output more random, lower values more deterministic")
+        if temperature != 0.7 and st.session_state.genai_initialized:
+            st.session_state.model.generation_config["temperature"] = temperature
+
     # File upload
     st.header("Upload Contact List")
     uploaded_file = st.file_uploader("Upload CSV file with contacts", type=['csv'])
@@ -333,8 +416,33 @@ David,Kumar,SecureNet Solutions,Infrastructure Lead,Banking,Australia"""
             st.write("### Preview of uploaded data")
             st.dataframe(df.head())
 
+            # Generate single example
+            if st.button("Generate Sample Email"):
+                with st.spinner("Generating sample email..."):
+                    # Use the first row for the sample
+                    first_row = df.iloc[0]
+                    prompt = st.session_state.template.format(
+                        first_name=first_row['First Name'],
+                        last_name=first_row['Last Name'],
+                        company=first_row['Company'],
+                        role=first_row['Role'],
+                        industry=first_row['Industry'],
+                        country=first_row['Country'],
+                        product_description=ITOM['description'],
+                        product_features=", ".join(ITOM['features']),
+                        cta=cta_text,
+                        custom_text=custom_text
+                    )
+
+                    sample_email = generate_email_content(prompt)
+                    st.subheader(f"Sample Email for {first_row['First Name']} {first_row['Last Name']}")
+                    paragraphs = parse_email_paragraphs(sample_email)
+
+                    for i, paragraph in enumerate(paragraphs, 1):
+                        st.markdown(f"**Paragraph {i}:**\n\n{paragraph}")
+
             # Generate Emails Button
-            if st.button("Generate Personalized Emails"):
+            if st.button("Generate Personalized Emails for All Contacts"):
                 with st.spinner("Generating personalized emails..."):
                     result_df = generate_bulk_emails(df, cta_text, custom_text)
 
