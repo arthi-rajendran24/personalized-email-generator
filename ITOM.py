@@ -219,6 +219,9 @@ def email_verification_form():
 def api_key_form():
     """Display API key input form"""
     st.sidebar.markdown("### Gemini API Configuration")
+    st.sidebar.markdown("""
+    <small>📘 Need help getting your API key? Click the "How to Get Your Gemini API Key" dropdown below the main tool area.</small>
+    """, unsafe_allow_html=True)
     api_key = st.sidebar.text_input(
         "Enter your Gemini API Key",
         type="password",
@@ -333,6 +336,47 @@ def main():
     # API key verification
     if not api_key_form():
         st.warning("Please enter a valid Gemini API key to use the tool")
+
+        # Detailed instructions for getting a Gemini API key
+        with st.expander("📝 How to Get Your Gemini API Key (Step-by-Step Instructions)"):
+            st.markdown("""
+            ### Getting Your Gemini API Key
+
+            Follow these detailed steps to obtain your Google AI (Gemini) API key:
+
+            #### Step 1: Create a Google AI Studio Account
+            1. Go to [Google AI Studio](https://makersuite.google.com/app/apikey)
+            2. Sign in with your Google account (or create one if needed)
+            3. Accept the terms of service if prompted
+
+            #### Step 2: Access the API Key Section
+            1. Once logged in, click on "Get API key" in the left sidebar
+            2. If you already have a key, click on "API keys" in the left navigation menu
+
+            #### Step 3: Create a New API Key
+            1. Click on the "Create API key" button
+            2. A dialog will appear with your new API key
+            3. The key will look like a long string of letters and numbers (e.g., "AIzaSyC_abcdefghijklmnopqrstuvwxyz12345")
+            4. Click "Copy" to copy it to your clipboard
+
+            #### Step 4: Use Your API Key in This Application
+            1. Paste the copied API key into the "Enter your Gemini API Key" field in the sidebar
+            2. Click outside the field or press Enter to validate the key
+
+            #### Important Notes:
+            - **Keep your API key secret**: Do not share it publicly or commit it to public repositories
+            - **Usage limits**: Check Google AI Studio for your current usage limits and quotas
+            - **Cost**: Google currently offers free usage limits (as of April 2025), but check their pricing page for the most current information
+            - **Troubleshooting**: If you get an error, make sure the key was copied correctly with no extra spaces
+
+            #### For More Information:
+            - Visit [Google AI Gemini API Documentation](https://ai.google.dev/docs)
+            - If you need more help, visit the [Google AI Studio Support](https://support.google.com/ai-studio)
+            """)
+
+            st.image("https://via.placeholder.com/600x400.png?text=Gemini+API+Key+Screenshot+(Placeholder)",
+                     caption="Example of the Google AI Studio API key page (placeholder image)")
+
         return
 
     # Documentation section
